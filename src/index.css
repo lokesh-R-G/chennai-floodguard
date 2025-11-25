@@ -142,3 +142,29 @@ All colors MUST be HSL.
     background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--success)) 100%);
   }
 }
+
+/* Leaflet Map Styling */
+.leaflet-container {
+  font-family: 'Work Sans', sans-serif;
+  background: hsl(var(--background));
+}
+
+.leaflet-popup-content-wrapper {
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.leaflet-popup-content {
+  margin: 0;
+}
+
+.leaflet-popup-tip {
+  background: hsl(var(--card));
+}
+
+.custom-incident-marker {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
