@@ -94,11 +94,18 @@ const InteractiveFloodMap = () => {
         supabase.from("incidents").select("*").in("status", ["pending", "assigned", "in_progress"])
       ]);
 
-      if (zonesResult.error) throw zonesResult.error;
-      if (incidentsResult.error) throw incidentsResult.error;
+      if (zonesResult.error) {
+        console.error("Error fetching zones:", zonesResult.error);
+        toast.error("Failed to load flood zones");
+      } else {
+        setZones(zonesResult.data || []);
+      }
 
-      setZones(zonesResult.data || []);
-      setIncidents(incidentsResult.data || []);
+      if (incidentsResult.error) {
+        console.error("Error fetching incidents:", incidentsResult.error);
+      } else {
+        setIncidents(incidentsResult.data || []);
+      }
     } catch (error) {
       console.error("Error fetching data:", error);
       toast.error("Failed to load map data");
