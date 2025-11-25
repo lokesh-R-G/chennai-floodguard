@@ -117,39 +117,6 @@ const DriverPanel = ({ userId }: DriverPanelProps) => {
     }
   };
 
-  const computeSafeRoute = async () => {
-    if (!currentJob || !driver?.current_lat || !driver?.current_lon) {
-      toast.error('Location data not available');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('compute-safe-route', {
-        body: {
-          start: { lat: driver.current_lat, lon: driver.current_lon },
-          end: { lat: currentJob.location_lat, lon: currentJob.location_lon }
-        }
-      });
-
-      if (error) throw error;
-
-      // Update incident with computed route
-      await supabase
-        .from('incidents')
-        .update({ safe_route: data })
-        .eq('id', currentJob.id);
-
-      toast.success(`Safe route computed: ${data.totalDistance} km`);
-      fetchCurrentJob();
-    } catch (error: any) {
-      console.error('Route computation error:', error);
-      toast.error('Failed to compute safe route');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const getStatusColor = (status: string): "default" | "destructive" | "success" | "warning" => {
     switch (status) {
       case "available":
@@ -253,41 +220,9 @@ const DriverPanel = ({ userId }: DriverPanelProps) => {
                   <p className="text-sm">{currentJob.description}</p>
                 </div>
               )}
-
-              {currentJob.safe_route && (
-                <div className="p-3 bg-success/10 border border-success/30 rounded-md">
-                  <p className="text-sm font-semibold mb-2 text-success">✓ Safe Route Available</p>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <p className="text-muted-foreground">Distance</p>
-                      <p className="font-medium">{currentJob.safe_route.totalDistance} km</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Avg Risk</p>
-                      <p className="font-medium">{currentJob.safe_route.averageRisk}/10</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Waypoints</p>
-                      <p className="font-medium">{currentJob.safe_route.waypoints}</p>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="mt-4 space-y-2">
-              {currentJob.status === "assigned" && !currentJob.safe_route && (
-                <Button
-                  onClick={computeSafeRoute}
-                  disabled={loading}
-                  variant="outline"
-                  className="w-full"
-                >
-                  <Navigation className="h-4 w-4 mr-2" />
-                  Compute Safe Route
-                </Button>
-              )}
-
               {currentJob.status === "assigned" && (
                 <Button
                   onClick={() => updateJobStatus("in_progress")}

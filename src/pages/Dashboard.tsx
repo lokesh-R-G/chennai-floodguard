@@ -5,7 +5,7 @@ import { Session } from "@supabase/supabase-js";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { LogOut, Shield } from "lucide-react";
-import InteractiveFloodMap from "@/components/InteractiveFloodMap";
+import FloodMap from "@/components/FloodMap";
 import CitizenPanel from "@/components/CitizenPanel";
 import DriverPanel from "@/components/DriverPanel";
 import PharmacistPanel from "@/components/PharmacistPanel";
@@ -110,7 +110,7 @@ const Dashboard = () => {
       <div className="container mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-80px)]">
         {/* Map - Takes 2 columns on large screens */}
         <div className="lg:col-span-2 bg-card border border-border rounded-lg overflow-hidden">
-          <InteractiveFloodMap />
+          <FloodMap />
         </div>
 
         {/* Role-specific Panel */}

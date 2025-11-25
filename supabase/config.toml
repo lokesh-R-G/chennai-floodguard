@@ -1,7 +1,1 @@
 project_id = "zxdcqktqemxotmsgztvx"
-
-[functions.compute-safe-route]
-verify_jwt = false
-
-[functions.predict-rainfall]
-verify_jwt = false
