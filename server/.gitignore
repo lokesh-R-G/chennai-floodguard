@@ -1,0 +1,14 @@
+node_modules/
+dist/
+logs/
+*.log
+.env
+.DS_Store
+coverage/
+*.pid
+*.seed
+*.pid.lock
+.npm
+.eslintcache
+.vscode/
+.idea/

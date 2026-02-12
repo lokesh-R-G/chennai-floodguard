@@ -1,0 +1,25 @@
+import { describe, it, expect } from '@jest/globals';
+import { DriverMatchingService } from '../services/driverMatchingService.js';
+
+describe('Driver Matching Service', () => {
+  const service = new DriverMatchingService();
+
+  it('should calculate distance correctly', () => {
+    const point1 = { lat: 13.0827, lon: 80.2707 };
+    const point2 = { lat: 13.0850, lon: 80.2101 };
+    
+    // @ts-ignore - accessing private method for testing
+    const distance = service.calculateDistance(point1, point2);
+    
+    expect(distance).toBeGreaterThan(0);
+    expect(distance).toBeLessThan(10); // Should be less than 10km
+  });
+
+  it('should calculate driver score correctly', () => {
+    // @ts-ignore - accessing private method for testing
+    const score = service.calculateDriverScore(2, 4.5, 0.9, 10);
+    
+    expect(score).toBeGreaterThan(0);
+    expect(score).toBeLessThanOrEqual(1);
+  });
+});
