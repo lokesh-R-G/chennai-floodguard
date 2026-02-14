@@ -1,0 +1,18 @@
+# Runtime
+node_modules
+dist
+coverage
+.env
+*.log
+
+# Build artifacts
+.git
+.gitignore
+.vscode
+.idea
+
+# Server (separate build)
+server/
+supabase/
+public/models/
+*.md

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
-import { Session } from "@supabase/supabase-js";
+import apiClient from "@/lib/apiClient";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { LogOut, Shield } from "lucide-react";
@@ -10,61 +9,44 @@ import CitizenPanel from "@/components/CitizenPanel";
 import DriverPanel from "@/components/DriverPanel";
 import PharmacistPanel from "@/components/PharmacistPanel";
 
+interface AuthUser {
+  id: string;
+  email: string;
+  fullName: string;
+  role: string;
+}
+
 const Dashboard = () => {
   const navigate = useNavigate();
-  const [session, setSession] = useState<Session | null>(null);
-  const [profile, setProfile] = useState<any>(null);
+  const [profile, setProfile] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check active session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (!session) {
-        navigate("/auth");
-      } else {
-        fetchProfile(session.user.id);
-      }
-    });
-
-    // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (!session) {
-        navigate("/auth");
-      } else {
-        fetchProfile(session.user.id);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [navigate]);
-
-  const fetchProfile = async (userId: string) => {
-    try {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", userId)
-        .single();
-
-      if (error) throw error;
-      setProfile(data);
-    } catch (error: any) {
-      toast.error("Failed to load profile");
-    } finally {
-      setLoading(false);
+    const token = localStorage.getItem("auth_token");
+    if (!token) {
+      navigate("/auth");
+      return;
     }
-  };
+
+    const stored = localStorage.getItem("auth_user");
+    if (stored) {
+      try {
+        setProfile(JSON.parse(stored));
+      } catch {
+        navigate("/auth");
+      }
+    } else {
+      navigate("/auth");
+    }
+    setLoading(false);
+  }, [navigate]);
 
   const handleSignOut = async () => {
     try {
-      await supabase.auth.signOut();
+      apiClient.clearAuthToken();
       toast.success("Signed out successfully");
       navigate("/auth");
-    } catch (error: any) {
+    } catch {
       toast.error("Failed to sign out");
     }
   };
@@ -95,7 +77,7 @@ const Dashboard = () => {
           
           <div className="flex items-center gap-4">
             <div className="text-right">
-              <p className="text-sm font-medium">{profile?.full_name}</p>
+              <p className="text-sm font-medium">{profile?.fullName}</p>
               <p className="text-xs text-muted-foreground capitalize">{profile?.role}</p>
             </div>
             <Button variant="outline" size="sm" onClick={handleSignOut}>
@@ -108,16 +90,13 @@ const Dashboard = () => {
 
       {/* Main Content */}
       <div className="container mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-80px)]">
-        {/* Map - Takes 2 columns on large screens */}
         <div className="lg:col-span-2 bg-card border border-border rounded-lg overflow-hidden">
           <FloodMap />
         </div>
-
-        {/* Role-specific Panel */}
         <div className="bg-card border border-border rounded-lg overflow-hidden">
-          {profile?.role === "citizen" && <CitizenPanel userId={session?.user?.id} />}
-          {profile?.role === "driver" && <DriverPanel userId={session?.user?.id} />}
-          {profile?.role === "pharmacist" && <PharmacistPanel userId={session?.user?.id} />}
+          {profile?.role === "citizen" && <CitizenPanel userId={profile?.id} />}
+          {profile?.role === "driver" && <DriverPanel userId={profile?.id} />}
+          {profile?.role === "pharmacist" && <PharmacistPanel userId={profile?.id} />}
         </div>
       </div>
     </div>

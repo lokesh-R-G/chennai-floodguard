@@ -1,292 +1,253 @@
 import axios from 'axios';
-import { getDistance, findNearest } from 'geolib';
+import { getDistance } from 'geolib';
 import FloodZone from '../models/FloodZone.js';
+import { config } from '../config/env.js';
 import logger from '../config/logger.js';
 
-interface Location {
+export interface Location {
   lat: number;
   lon: number;
 }
 
-interface RouteWaypoint {
+export interface RouteWaypoint {
   lat: number;
   lon: number;
 }
 
-interface SafeRoute {
+export interface SafeRoute {
   waypoints: RouteWaypoint[];
-  totalDistance: number;
+  totalDistance: number;   // km
   avgRiskScore: number;
-  estimatedTime: number;
+  estimatedTime: number;  // minutes
 }
 
 export class RoutingService {
   private osrmURL: string;
 
   constructor() {
-    this.osrmURL = process.env.OSRM_API_URL || 'http://router.project-osrm.org';
+    this.osrmURL = config.osrmUrl;
   }
 
   /**
-   * Compute safe route considering flood zones and road network
+   * Primary entry point: get a safe route from start→end that avoids flood zones.
+   * Pipeline: OSRM raw route → risk analysis → alternative if too risky → Dijkstra fallback.
    */
-  async computeSafeRoute(
-    start: Location,
-    end: Location
-  ): Promise<SafeRoute> {
+  async computeSafeRoute(start: Location, end: Location): Promise<SafeRoute> {
+    const zones = await FloodZone.find();
+
+    // 1. Try OSRM first
     try {
-      // Get all flood zones
-      const zones = await FloodZone.find();
+      const roadWps = await this.getOSRMRoute(start, end);
+      const analyzed = this.analyzeRouteRisk(roadWps, zones);
 
-      // Step 1: Get actual road route from OSRM
-      const roadRoute = await this.getOSRMRoute(start, end);
+      if (analyzed.avgRiskScore <= 7) return analyzed;
 
-      // Step 2: Analyze route through flood zones
-      const analyzedRoute = this.analyzeRouteRisk(roadRoute, zones);
+      // 2. If too risky, try alternative with mid-waypoint
+      logger.info('Primary route too risky, trying alternative');
+      const alt = await this.findAlternativeRoute(start, end, zones);
+      if (alt && alt.avgRiskScore < analyzed.avgRiskScore) return alt;
 
-      // Step 3: If route is too risky, try alternative routes
-      if (analyzedRoute.avgRiskScore > 7) {
-        logger.info('Primary route too risky, searching for alternatives...');
-        const alternativeRoute = await this.findAlternativeRoute(start, end, zones);
-        if (alternativeRoute && alternativeRoute.avgRiskScore < analyzedRoute.avgRiskScore) {
-          return alternativeRoute;
-        }
-      }
-
-      return analyzedRoute;
-
-    } catch (error) {
-      logger.error('Error computing safe route:', error);
-      // Fallback to simple zone-based routing
-      return this.fallbackZoneBasedRoute(start, end);
+      return analyzed; // return best available
+    } catch {
+      // 3. Dijkstra zone-based fallback
+      logger.warn('OSRM unavailable, using Dijkstra zone-based fallback');
+      return this.dijkstraFallback(start, end, zones);
     }
   }
 
-  /**
-   * Get actual road route from OSRM (OpenStreetMap Routing Machine)
-   */
+  /* ── OSRM ──────────────────────────────────── */
+
   private async getOSRMRoute(start: Location, end: Location): Promise<RouteWaypoint[]> {
-    try {
-      const url = `${this.osrmURL}/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}`;
-      const response = await axios.get(url, {
-        params: {
-          overview: 'full',
-          geometries: 'geojson',
-          steps: true
-        },
-        timeout: 5000
-      });
+    const url = `${this.osrmURL}/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}`;
+    const response = await axios.get(url, {
+      params: { overview: 'full', geometries: 'geojson', steps: true },
+      timeout: 8000,
+    });
 
-      if (response.data.code !== 'Ok' || !response.data.routes[0]) {
-        throw new Error('OSRM routing failed');
-      }
-
-      // Extract waypoints from route geometry
-      const coordinates = response.data.routes[0].geometry.coordinates;
-      return coordinates.map((coord: number[]) => ({
-        lon: coord[0],
-        lat: coord[1]
-      }));
-
-    } catch (error) {
-      logger.warn('OSRM API call failed:', error);
-      throw error;
+    if (response.data.code !== 'Ok' || !response.data.routes[0]) {
+      throw new Error('OSRM returned no valid route');
     }
+
+    return response.data.routes[0].geometry.coordinates.map((c: number[]) => ({
+      lon: c[0],
+      lat: c[1],
+    }));
   }
 
-  /**
-   * Analyze route risk based on flood zones
-   */
-  private analyzeRouteRisk(waypoints: RouteWaypoint[], zones: any[]): SafeRoute {
+  /* ── Risk analysis ─────────────────────────── */
+
+  analyzeRouteRisk(waypoints: RouteWaypoint[], zones: any[]): SafeRoute {
     let totalRisk = 0;
     let riskPoints = 0;
     let totalDistance = 0;
 
     for (let i = 0; i < waypoints.length - 1; i++) {
-      const point = waypoints[i];
-      const nextPoint = waypoints[i + 1];
+      const p = waypoints[i];
+      const np = waypoints[i + 1];
 
-      // Calculate segment distance
-      const segmentDistance = getDistance(
-        { latitude: point.lat, longitude: point.lon },
-        { latitude: nextPoint.lat, longitude: nextPoint.lon }
+      const seg = getDistance(
+        { latitude: p.lat, longitude: p.lon },
+        { latitude: np.lat, longitude: np.lon },
       );
-      totalDistance += segmentDistance;
+      totalDistance += seg;
 
-      // Find nearest flood zone
-      const nearestZone = this.findNearestZone(point, zones);
-      if (nearestZone && nearestZone.distance < 1000) { // Within 1km
-        totalRisk += nearestZone.zone.currentRiskScore;
+      const nearest = this.findNearestZone(p, zones);
+      if (nearest && nearest.distance < 1000) {
+        totalRisk += nearest.zone.currentRiskScore;
         riskPoints++;
       }
     }
 
-    const avgRiskScore = riskPoints > 0 ? totalRisk / riskPoints : 0;
-    const estimatedTime = (totalDistance / 1000) * 5; // Rough estimate: 5 min per km in emergency
+    const avgRisk = riskPoints > 0 ? totalRisk / riskPoints : 0;
+    const distKm = totalDistance / 1000;
+    const estMin = distKm * 5; // ~12 km/h emergency avg
 
-    return {
-      waypoints,
-      totalDistance: totalDistance / 1000, // Convert to km
-      avgRiskScore,
-      estimatedTime
-    };
+    return { waypoints, totalDistance: distKm, avgRiskScore: avgRisk, estimatedTime: estMin };
   }
 
-  /**
-   * Find nearest flood zone to a point
-   */
-  private findNearestZone(point: Location, zones: any[]): { zone: any; distance: number } | null {
-    let nearest = null;
-    let minDistance = Infinity;
+  findNearestZone(point: Location, zones: any[]): { zone: any; distance: number } | null {
+    let nearest: any = null;
+    let min = Infinity;
 
-    for (const zone of zones) {
-      const distance = getDistance(
+    for (const z of zones) {
+      const d = getDistance(
         { latitude: point.lat, longitude: point.lon },
-        { latitude: zone.centerLat, longitude: zone.centerLon }
+        { latitude: z.centerLat, longitude: z.centerLon },
       );
-
-      if (distance < minDistance) {
-        minDistance = distance;
-        nearest = zone;
+      if (d < min) {
+        min = d;
+        nearest = z;
       }
     }
-
-    return nearest ? { zone: nearest, distance: minDistance } : null;
+    return nearest ? { zone: nearest, distance: min } : null;
   }
 
-  /**
-   * Find alternative route by avoiding high-risk zones
-   */
+  /* ── Alternative route via safe mid-waypoint ── */
+
   private async findAlternativeRoute(
     start: Location,
     end: Location,
-    zones: any[]
+    zones: any[],
   ): Promise<SafeRoute | null> {
     try {
-      // Get high-risk zones (score > 7)
-      const highRiskZones = zones.filter(z => z.currentRiskScore > 7);
+      const highRisk = zones.filter((z) => z.currentRiskScore > 7);
+      if (highRisk.length === 0) return null;
 
-      if (highRiskZones.length === 0) {
-        return null;
-      }
-
-      // Use OSRM with waypoints to avoid high-risk areas
-      // Add intermediate waypoint away from high-risk zones
-      const midPoint = this.calculateSafeMidpoint(start, end, highRiskZones);
-
-      const route1 = await this.getOSRMRoute(start, midPoint);
-      const route2 = await this.getOSRMRoute(midPoint, end);
-
-      const combinedRoute = [...route1, ...route2];
-      return this.analyzeRouteRisk(combinedRoute, zones);
-
-    } catch (error) {
-      logger.error('Error finding alternative route:', error);
+      const mid = this.calculateSafeMidpoint(start, end, highRisk);
+      const r1 = await this.getOSRMRoute(start, mid);
+      const r2 = await this.getOSRMRoute(mid, end);
+      return this.analyzeRouteRisk([...r1, ...r2], zones);
+    } catch {
       return null;
     }
   }
 
-  /**
-   * Calculate a safe midpoint between start and end, avoiding high-risk zones
-   */
-  private calculateSafeMidpoint(
-    start: Location,
-    end: Location,
-    highRiskZones: any[]
-  ): Location {
-    const midLat = (start.lat + end.lat) / 2;
-    const midLon = (start.lon + end.lon) / 2;
+  private calculateSafeMidpoint(start: Location, end: Location, hrz: any[]): Location {
+    let midLat = (start.lat + end.lat) / 2;
+    let midLon = (start.lon + end.lon) / 2;
 
-    // Check if midpoint is in high-risk zone
-    let safeMid = { lat: midLat, lon: midLon };
-    
-    for (const zone of highRiskZones) {
-      const distance = getDistance(
-        { latitude: safeMid.lat, longitude: safeMid.lon },
-        { latitude: zone.centerLat, longitude: zone.centerLon }
+    for (const z of hrz) {
+      const d = getDistance(
+        { latitude: midLat, longitude: midLon },
+        { latitude: z.centerLat, longitude: z.centerLon },
       );
-
-      if (distance < 2000) { // Within 2km of high-risk zone
-        // Offset midpoint perpendicular to direct line
-        const offset = 0.02; // ~2km offset
-        safeMid = {
-          lat: midLat + offset,
-          lon: midLon + offset
-        };
+      if (d < 2000) {
+        midLat += 0.02;
+        midLon += 0.02;
         break;
       }
     }
-
-    return safeMid;
+    return { lat: midLat, lon: midLon };
   }
 
-  /**
-   * Fallback to simple zone-based routing if OSRM fails
-   */
-  private async fallbackZoneBasedRoute(start: Location, end: Location): Promise<SafeRoute> {
-    logger.info('Using fallback zone-based routing');
+  /* ── Dijkstra zone-based fallback ──────────── */
 
-    const zones = await FloodZone.find().sort({ currentRiskScore: 1 });
+  dijkstraFallback(start: Location, end: Location, zones: any[]): SafeRoute {
+    // Build a simple weighted graph: start, each zone center, end
+    const nodes: Location[] = [start, ...zones.map((z: any) => ({ lat: z.centerLat, lon: z.centerLon })), end];
+    const n = nodes.length;
+    const INF = Number.MAX_SAFE_INTEGER;
 
-    // Create simple waypoints through low-risk zones
-    const waypoints: RouteWaypoint[] = [
-      { lat: start.lat, lon: start.lon }
-    ];
+    // adjacency
+    const dist: number[][] = Array.from({ length: n }, () => Array(n).fill(INF));
+    for (let i = 0; i < n; i++) dist[i][i] = 0;
 
-    // Add intermediate waypoints through safer zones if needed
-    const distance = getDistance(
-      { latitude: start.lat, longitude: start.lon },
-      { latitude: end.lat, longitude: end.lon }
-    );
-
-    if (distance > 5000) { // > 5km, add intermediate point
-      const lowRiskZones = zones.filter(z => z.currentRiskScore < 6);
-      if (lowRiskZones.length > 0) {
-        const intermediateZone = lowRiskZones[0];
-        waypoints.push({
-          lat: intermediateZone.centerLat,
-          lon: intermediateZone.centerLon
-        });
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const d = getDistance(
+          { latitude: nodes[i].lat, longitude: nodes[i].lon },
+          { latitude: nodes[j].lat, longitude: nodes[j].lon },
+        );
+        if (d > 15000) continue; // skip edges > 15km
+        const risk = j > 0 && j < n - 1 ? zones[j - 1].currentRiskScore : 0;
+        const weight = d * (1 + risk / 5);
+        dist[i][j] = weight;
+        dist[j][i] = weight;
       }
     }
 
-    waypoints.push({ lat: end.lat, lon: end.lon });
+    // Dijkstra from node 0 (start) → node n-1 (end)
+    const visited = new Array(n).fill(false);
+    const shortest = new Array(n).fill(INF);
+    const prev = new Array(n).fill(-1);
+    shortest[0] = 0;
 
-    // Calculate total distance and average risk
-    let totalDistance = 0;
+    for (let round = 0; round < n; round++) {
+      let u = -1;
+      let best = INF;
+      for (let i = 0; i < n; i++) {
+        if (!visited[i] && shortest[i] < best) {
+          best = shortest[i];
+          u = i;
+        }
+      }
+      if (u === -1) break;
+      visited[u] = true;
+      for (let v = 0; v < n; v++) {
+        if (!visited[v] && dist[u][v] < INF) {
+          const nd = shortest[u] + dist[u][v];
+          if (nd < shortest[v]) {
+            shortest[v] = nd;
+            prev[v] = u;
+          }
+        }
+      }
+    }
+
+    // Reconstruct path
+    const path: RouteWaypoint[] = [];
+    let cur = n - 1;
+    while (cur !== -1) {
+      path.unshift(nodes[cur]);
+      cur = prev[cur];
+    }
+    if (path.length === 0) path.push(start, end);
+
+    // Compute metrics
+    let totalDist = 0;
     let totalRisk = 0;
-
-    for (let i = 0; i < waypoints.length - 1; i++) {
-      const segmentDistance = getDistance(
-        { latitude: waypoints[i].lat, longitude: waypoints[i].lon },
-        { latitude: waypoints[i + 1].lat, longitude: waypoints[i + 1].lon }
+    let riskPts = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+      totalDist += getDistance(
+        { latitude: path[i].lat, longitude: path[i].lon },
+        { latitude: path[i + 1].lat, longitude: path[i + 1].lon },
       );
-      totalDistance += segmentDistance;
-
-      // Find nearest zone
-      const nearestZone = this.findNearestZone(waypoints[i], zones);
-      if (nearestZone) {
-        totalRisk += nearestZone.zone.currentRiskScore;
+      const nz = this.findNearestZone(path[i], zones);
+      if (nz && nz.distance < 2000) {
+        totalRisk += nz.zone.currentRiskScore;
+        riskPts++;
       }
     }
 
+    const km = totalDist / 1000;
     return {
-      waypoints,
-      totalDistance: totalDistance / 1000,
-      avgRiskScore: totalRisk / (waypoints.length - 1),
-      estimatedTime: (totalDistance / 1000) * 5
+      waypoints: path,
+      totalDistance: km,
+      avgRiskScore: riskPts > 0 ? totalRisk / riskPts : 0,
+      estimatedTime: km * 5,
     };
-  }
-
-  /**
-   * Get distance between two points in km
-   */
-  getDistanceKm(point1: Location, point2: Location): number {
-    return getDistance(
-      { latitude: point1.lat, longitude: point1.lon },
-      { latitude: point2.lat, longitude: point2.lon }
-    ) / 1000;
   }
 }
 
-export default new RoutingService();
+export const routingService = new RoutingService();
+export default routingService;

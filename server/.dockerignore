@@ -1,0 +1,17 @@
+# Runtime
+node_modules
+dist
+coverage
+.env
+*.log
+
+# Build artifacts
+.git
+.gitignore
+*.md
+.vscode
+.idea
+
+# Tests (not needed in prod image)
+src/__tests__
+jest.config.json

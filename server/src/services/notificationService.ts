@@ -1,5 +1,7 @@
 import webpush from 'web-push';
 import User from '../models/User.js';
+import notificationQueue, { NotificationJobData } from '../queues/notificationQueue.js';
+import { config } from '../config/env.js';
 import logger from '../config/logger.js';
 
 interface NotificationPayload {
@@ -7,169 +9,139 @@ interface NotificationPayload {
   body: string;
   icon?: string;
   badge?: string;
-  data?: any;
-  actions?: Array<{
-    action: string;
-    title: string;
-  }>;
+  data?: Record<string, unknown>;
+  actions?: Array<{ action: string; title: string }>;
 }
 
-export class PushNotificationService {
-  constructor() {
-    const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
-    const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
-    const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:admin@chennaifloodguard.com';
+export class NotificationService {
+  private initialized = false;
 
-    if (vapidPublicKey && vapidPrivateKey) {
-      webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+  constructor() {
+    if (config.vapidPublicKey && config.vapidPrivateKey) {
+      webpush.setVapidDetails(config.vapidSubject, config.vapidPublicKey, config.vapidPrivateKey);
+      this.initialized = true;
     } else {
-      logger.warn('VAPID keys not configured. Push notifications will not work.');
+      logger.warn('VAPID keys not configured — push disabled');
     }
   }
 
-  /**
-   * Send push notification to a specific user
-   */
+  /* ────────────────────────────────────
+   *  Low-level push (processed by worker)
+   * ──────────────────────────────────── */
+
   async sendToUser(userId: string, payload: NotificationPayload): Promise<boolean> {
+    if (!this.initialized) return false;
+
     try {
       const user = await User.findById(userId);
-      
-      if (!user || !user.pushSubscription) {
-        logger.debug(`User ${userId} has no push subscription`);
-        return false;
-      }
-
-      const notificationPayload = JSON.stringify({
-        title: payload.title,
-        body: payload.body,
-        icon: payload.icon || '/logo.png',
-        badge: payload.badge || '/badge.png',
-        data: payload.data || {},
-        actions: payload.actions || []
-      });
+      if (!user?.pushSubscription) return false;
 
       await webpush.sendNotification(
         user.pushSubscription,
-        notificationPayload
+        JSON.stringify({
+          title: payload.title,
+          body: payload.body,
+          icon: payload.icon || '/logo.png',
+          badge: payload.badge || '/badge.png',
+          data: payload.data || {},
+          actions: payload.actions || [],
+        }),
       );
-
-      logger.info(`Push notification sent to user ${userId}`);
+      logger.debug(`Push sent to ${userId}`);
       return true;
-
-    } catch (error: any) {
-      logger.error(`Error sending push notification to user ${userId}:`, error);
-
-      // If subscription is invalid, remove it
-      if (error.statusCode === 410) {
-        await User.findByIdAndUpdate(userId, {
-          $unset: { pushSubscription: 1 }
-        });
-        logger.info(`Removed invalid push subscription for user ${userId}`);
+    } catch (err: any) {
+      if (err.statusCode === 410) {
+        await User.findByIdAndUpdate(userId, { $unset: { pushSubscription: 1 } });
+        logger.info(`Removed stale push sub for ${userId}`);
+      } else {
+        logger.error(`Push to ${userId} failed:`, err.message);
       }
-
       return false;
     }
   }
 
-  /**
-   * Send push notification to multiple users
-   */
   async sendToMultipleUsers(
     userIds: string[],
-    payload: NotificationPayload
+    payload: NotificationPayload,
   ): Promise<{ sent: number; failed: number }> {
     const results = await Promise.allSettled(
-      userIds.map(userId => this.sendToUser(userId, payload))
+      userIds.map((uid) => this.sendToUser(uid, payload)),
     );
-
-    const sent = results.filter(r => r.status === 'fulfilled' && r.value).length;
-    const failed = userIds.length - sent;
-
-    logger.info(`Sent ${sent}/${userIds.length} push notifications`);
-    return { sent, failed };
+    const sent = results.filter((r) => r.status === 'fulfilled' && r.value).length;
+    return { sent, failed: userIds.length - sent };
   }
 
-  /**
-   * Send emergency alert notification
-   */
-  async sendEmergencyAlert(userId: string, incidentId: string, emergencyType: string): Promise<void> {
-    await this.sendToUser(userId, {
-      title: '🚨 Emergency Alert',
-      body: `New ${emergencyType} emergency request received!`,
-      icon: '/emergency-icon.png',
-      data: {
-        type: 'emergency',
-        incidentId,
-        url: `/dashboard?incident=${incidentId}`
+  /* ────────────────────────────────────
+   *  Queue-backed high-level helpers (non-blocking)
+   * ──────────────────────────────────── */
+
+  async enqueueEmergencyAlert(userId: string, incidentId: string, emergencyType: string): Promise<void> {
+    await notificationQueue.add({
+      type: 'push',
+      userId,
+      payload: {
+        title: '🚨 Emergency Alert',
+        body: `New ${emergencyType} emergency request received!`,
+        data: { type: 'emergency', incidentId, url: `/dashboard?incident=${incidentId}` },
       },
-      actions: [
-        { action: 'view', title: 'View Details' },
-        { action: 'dismiss', title: 'Dismiss' }
-      ]
     });
   }
 
-  
-/**
-   * Send driver assignment notification to citizen
-   */
-  async sendDriverAssigned(userId: string, driverName: string, vehicleNumber: string): Promise<void> {
-    await this.sendToUser(userId, {
-      title: '✅ Help is on the way!',
-      body: `Driver ${driverName} (${vehicleNumber}) has been assigned to your emergency.`,
-      icon: '/driver-icon.png',
-      data: {
-        type: 'driver_assigned'
-      }
+  async enqueueDriverAssigned(userId: string, driverName: string, vehicleNumber: string): Promise<void> {
+    await notificationQueue.add({
+      type: 'driver_assigned',
+      userId,
+      payload: {
+        title: '✅ Help is on the way!',
+        body: `Driver ${driverName} (${vehicleNumber}) has been assigned.`,
+      },
     });
   }
 
-  /**
-   * Send job completion notification
-   */
-  async sendJobCompleted(userId: string, incidentId: string): Promise<void> {
-    await this.sendToUser(userId, {
-      title: '✅ Emergency Resolved',
-      body: 'Your emergency has been successfully handled. Stay safe!',
-      icon: '/success-icon.png',
-      data: {
-        type: 'job_completed',
-        incidentId
-      }
+  async enqueueJobCompleted(userId: string, incidentId: string): Promise<void> {
+    await notificationQueue.add({
+      type: 'job_completed',
+      userId,
+      payload: {
+        title: '✅ Emergency Resolved',
+        body: 'Your emergency has been successfully handled. Stay safe!',
+        data: { type: 'job_completed', incidentId },
+      },
     });
   }
 
-  /**
-   * Send flood zone risk alert
-   */
-  async sendFloodRiskAlert(userIds: string[], zoneName: string, riskScore: number): Promise<void> {
-    await this.sendToMultipleUsers(userIds, {
-      title: '⚠️ Flood Risk Alert',
-      body: `${zoneName} has reached ${riskScore.toFixed(1)} risk score. Stay alert!`,
-      icon: '/warning-icon.png',
-      data: {
-        type: 'flood_alert',
-        zoneName,
-        riskScore
-      }
+  async enqueueFloodRiskAlert(userIds: string[], zoneName: string, riskScore: number): Promise<void> {
+    await notificationQueue.add({
+      type: 'flood_alert',
+      userIds,
+      payload: {
+        title: '⚠️ Flood Risk Alert',
+        body: `${zoneName} risk score: ${riskScore.toFixed(1)}. Stay alert!`,
+        data: { type: 'flood_alert', zoneName, riskScore },
+      },
+    });
+  }
+
+  async enqueueLowStockAlert(userId: string, itemName: string, campName: string): Promise<void> {
+    await notificationQueue.add({
+      type: 'low_stock',
+      userId,
+      payload: {
+        title: '📦 Low Stock Alert',
+        body: `${itemName} at ${campName} is running low. Restock needed.`,
+      },
     });
   }
 
   /**
-   * Send low stock alert to pharmacists
+   * Alias kept for backwards-compatible route code.
    */
-  async sendLowStockAlert(userId: string, itemName: string, campName: string): Promise<void> {
-    await this.sendToUser(userId, {
-      title: '📦 Low Stock Alert',
-      body: `${itemName} is running low at ${campName}`,
-      icon: '/inventory-icon.png',
-      data: {
-        type: 'low_stock',
-        itemName,
-        campName
-      }
-    });
-  }
+  sendEmergencyAlert = this.enqueueEmergencyAlert.bind(this);
+  sendDriverAssigned = this.enqueueDriverAssigned.bind(this);
+  sendJobCompleted = this.enqueueJobCompleted.bind(this);
+  sendFloodRiskAlert = this.enqueueFloodRiskAlert.bind(this);
+  sendLowStockAlert = this.enqueueLowStockAlert.bind(this);
 }
 
-export default new PushNotificationService();
+export const notificationService = new NotificationService();
+export default notificationService;

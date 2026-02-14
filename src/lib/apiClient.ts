@@ -53,9 +53,25 @@ class ApiClient {
     this.token = null;
     delete this.client.defaults.headers.common['Authorization'];
     localStorage.removeItem('auth_token');
+    localStorage.removeItem('refresh_token');
+    localStorage.removeItem('auth_user');
   }
 
-  private handleUnauthorized(): void {
+  private async handleUnauthorized(): Promise<void> {
+    // Try refresh token rotation before kicking user out
+    const refreshToken = localStorage.getItem('refresh_token');
+    if (refreshToken) {
+      try {
+        const res = await axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken });
+        if (res.data?.data?.token) {
+          this.setAuthToken(res.data.data.token);
+          localStorage.setItem('refresh_token', res.data.data.refreshToken);
+          return; // retry will be handled by interceptor caller
+        }
+      } catch {
+        // Refresh failed — force logout
+      }
+    }
     this.clearAuthToken();
     window.location.href = '/auth';
   }

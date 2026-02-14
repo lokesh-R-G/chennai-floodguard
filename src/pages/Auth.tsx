@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/apiClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,38 +24,19 @@ const Auth = () => {
     setLoading(true);
 
     try {
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: `${window.location.origin}/`,
-          data: {
-            full_name: fullName,
-            phone,
-            role,
-          },
-        },
-      });
+      const response: any = await apiClient.register({ email, password, fullName, phone, role });
 
-      if (authError) throw authError;
-
-      if (authData.user) {
-        // Create profile
-        const { error: profileError } = await supabase.from("profiles").insert({
-          id: authData.user.id,
-          email,
-          full_name: fullName,
-          phone,
-          role,
-        });
-
-        if (profileError) throw profileError;
-
+      if (response?.data?.token) {
+        localStorage.setItem("auth_user", JSON.stringify(response.data.user));
+        if (response.data.refreshToken) {
+          localStorage.setItem("refresh_token", response.data.refreshToken);
+        }
         toast.success("Account created successfully!");
         navigate("/");
       }
     } catch (error: any) {
-      toast.error(error.message || "Failed to sign up");
+      const msg = error.response?.data?.message || error.message || "Failed to sign up";
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -66,17 +47,19 @@ const Auth = () => {
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      const response: any = await apiClient.login(email, password);
 
-      if (error) throw error;
-
-      toast.success("Signed in successfully!");
-      navigate("/");
+      if (response?.data?.token) {
+        localStorage.setItem("auth_user", JSON.stringify(response.data.user));
+        if (response.data.refreshToken) {
+          localStorage.setItem("refresh_token", response.data.refreshToken);
+        }
+        toast.success("Signed in successfully!");
+        navigate("/");
+      }
     } catch (error: any) {
-      toast.error(error.message || "Failed to sign in");
+      const msg = error.response?.data?.message || error.message || "Failed to sign in";
+      toast.error(msg);
     } finally {
       setLoading(false);
     }

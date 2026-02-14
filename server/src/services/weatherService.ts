@@ -1,8 +1,8 @@
 import axios from 'axios';
-import NodeCache from 'node-cache';
+import { cacheGet, cacheSet } from '../config/redis.js';
 import logger from '../config/logger.js';
 
-interface WeatherData {
+export interface WeatherData {
   temperature: number;
   humidity: number;
   rainfall: number;
@@ -11,7 +11,7 @@ interface WeatherData {
   timestamp: Date;
 }
 
-interface ForecastData {
+export interface ForecastData {
   hourly: Array<{
     time: string;
     temperature: number;
@@ -20,137 +20,123 @@ interface ForecastData {
   }>;
 }
 
-const weatherCache = new NodeCache({ stdTTL: 600 }); // 10 minutes cache
+const CACHE_TTL = 600; // 10 minutes
 
 export class WeatherService {
-  private baseURL: string;
+  private primaryURL: string;
   private fallbackURL?: string;
   private fallbackAPIKey?: string;
 
   constructor() {
-    this.baseURL = process.env.OPEN_METEO_API_URL || 'https://api.open-meteo.com/v1';
+    this.primaryURL = process.env.OPEN_METEO_API_URL || 'https://api.open-meteo.com/v1';
     this.fallbackURL = process.env.WEATHER_FALLBACK_API_URL;
     this.fallbackAPIKey = process.env.WEATHER_FALLBACK_API_KEY;
   }
 
+  /**
+   * Get current weather for a lat/lon. Redis cache → Open-Meteo → Fallback API.
+   * Throws if ALL providers fail — no dummy data.
+   */
   async getCurrentWeather(lat: number, lon: number): Promise<WeatherData> {
-    const cacheKey = `weather_${lat}_${lon}`;
-    const cached = weatherCache.get<WeatherData>(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
+    const cacheKey = `weather:current:${lat.toFixed(4)}_${lon.toFixed(4)}`;
 
+    const cached = await cacheGet<WeatherData>(cacheKey);
+    if (cached) return cached;
+
+    // Primary: Open-Meteo
     try {
-      // Try Open-Meteo API first (free, no key needed)
-      const response = await axios.get(`${this.baseURL}/forecast`, {
-        params: {
-          latitude: lat,
-          longitude: lon,
-          current_weather: true,
-          hourly: 'temperature_2m,precipitation,relative_humidity_2m',
-          timezone: 'Asia/Kolkata'
-        },
-        timeout: 5000
-      });
-
-      const current = response.data.current_weather;
-      const weatherData: WeatherData = {
-        temperature: current.temperature,
-        humidity: response.data.hourly?.relative_humidity_2m?.[0] || 0,
-        rainfall: current.precipitation || 0,
-        windSpeed: current.windspeed || 0,
-        pressure: 1013, // Default as Open-Meteo doesn't provide pressure
-        timestamp: new Date()
-      };
-
-      weatherCache.set(cacheKey, weatherData);
-      return weatherData;
-
-    } catch (error) {
-      logger.warn('Open-Meteo API failed, trying fallback:', error);
-      return this.getFallbackWeather(lat, lon);
+      const data = await this.fetchOpenMeteo(lat, lon);
+      await cacheSet(cacheKey, data, CACHE_TTL);
+      return data;
+    } catch (primaryErr) {
+      logger.warn('Open-Meteo failed, trying fallback', { error: (primaryErr as Error).message });
     }
+
+    // Fallback: WeatherAPI.com
+    if (this.fallbackURL && this.fallbackAPIKey) {
+      try {
+        const data = await this.fetchFallback(lat, lon);
+        await cacheSet(cacheKey, data, CACHE_TTL);
+        return data;
+      } catch (fbErr) {
+        logger.error('Fallback weather also failed', { error: (fbErr as Error).message });
+      }
+    }
+
+    throw new Error(`All weather providers failed for (${lat}, ${lon})`);
   }
 
   async getForecast(lat: number, lon: number, hours: number = 24): Promise<ForecastData> {
-    const cacheKey = `forecast_${lat}_${lon}_${hours}`;
-    const cached = weatherCache.get<ForecastData>(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
+    const cacheKey = `weather:forecast:${lat.toFixed(4)}_${lon.toFixed(4)}_${hours}`;
+    const cached = await cacheGet<ForecastData>(cacheKey);
+    if (cached) return cached;
 
-    try {
-      const response = await axios.get(`${this.baseURL}/forecast`, {
-        params: {
-          latitude: lat,
-          longitude: lon,
-          hourly: 'temperature_2m,precipitation,relative_humidity_2m',
-          forecast_days: Math.ceil(hours / 24),
-          timezone: 'Asia/Kolkata'
-        },
-        timeout: 5000
-      });
+    const response = await axios.get(`${this.primaryURL}/forecast`, {
+      params: {
+        latitude: lat,
+        longitude: lon,
+        hourly: 'temperature_2m,precipitation,relative_humidity_2m',
+        forecast_days: Math.ceil(hours / 24),
+        timezone: 'Asia/Kolkata',
+      },
+      timeout: 8000,
+    });
 
-      const forecast: ForecastData = {
-        hourly: response.data.hourly.time.slice(0, hours).map((time: string, i: number) => ({
-          time,
-          temperature: response.data.hourly.temperature_2m[i],
-          precipitation: response.data.hourly.precipitation[i],
-          humidity: response.data.hourly.relative_humidity_2m[i]
-        }))
-      };
+    const forecast: ForecastData = {
+      hourly: response.data.hourly.time.slice(0, hours).map((time: string, i: number) => ({
+        time,
+        temperature: response.data.hourly.temperature_2m[i],
+        precipitation: response.data.hourly.precipitation[i],
+        humidity: response.data.hourly.relative_humidity_2m[i],
+      })),
+    };
 
-      weatherCache.set(cacheKey, forecast);
-      return forecast;
-
-    } catch (error) {
-      logger.error('Forecast API failed:', error);
-      throw new Error('Unable to fetch weather forecast');
-    }
+    await cacheSet(cacheKey, forecast, CACHE_TTL);
+    return forecast;
   }
 
-  private async getFallbackWeather(lat: number, lon: number): Promise<WeatherData> {
-    if (!this.fallbackURL || !this.fallbackAPIKey) {
-      throw new Error('Weather API unavailable and no fallback configured');
-    }
+  /* ── private ────────────────────────────────── */
 
-    try {
-      const response = await axios.get(`${this.fallbackURL}/current.json`, {
-        params: {
-          key: this.fallbackAPIKey,
-          q: `${lat},${lon}`
-        },
-        timeout: 5000
-      });
+  private async fetchOpenMeteo(lat: number, lon: number): Promise<WeatherData> {
+    const response = await axios.get(`${this.primaryURL}/forecast`, {
+      params: {
+        latitude: lat,
+        longitude: lon,
+        current_weather: true,
+        hourly: 'relative_humidity_2m,surface_pressure',
+        timezone: 'Asia/Kolkata',
+      },
+      timeout: 8000,
+    });
+    const cw = response.data.current_weather;
+    const h = response.data.hourly;
 
-      const data = response.data.current;
-      return {
-        temperature: data.temp_c,
-        humidity: data.humidity,
-        rainfall: data.precip_mm,
-        windSpeed: data.wind_kph,
-        pressure: data.pressure_mb,
-        timestamp: new Date()
-      };
-    } catch (error) {
-      logger.error('Fallback weather API also failed:', error);
-      // Return dummy data to keep system operational
-      return {
-        temperature: 28,
-        humidity: 70,
-        rainfall: 0,
-        windSpeed: 10,
-        pressure: 1013,
-        timestamp: new Date()
-      };
-    }
+    return {
+      temperature: cw.temperature,
+      humidity: h?.relative_humidity_2m?.[0] ?? 0,
+      rainfall: cw.precipitation ?? 0,
+      windSpeed: cw.windspeed ?? 0,
+      pressure: h?.surface_pressure?.[0] ?? 1013,
+      timestamp: new Date(),
+    };
   }
 
-  clearCache(): void {
-    weatherCache.flushAll();
+  private async fetchFallback(lat: number, lon: number): Promise<WeatherData> {
+    const response = await axios.get(`${this.fallbackURL}/current.json`, {
+      params: { key: this.fallbackAPIKey, q: `${lat},${lon}` },
+      timeout: 8000,
+    });
+    const d = response.data.current;
+    return {
+      temperature: d.temp_c,
+      humidity: d.humidity,
+      rainfall: d.precip_mm,
+      windSpeed: d.wind_kph,
+      pressure: d.pressure_mb,
+      timestamp: new Date(),
+    };
   }
 }
 
-export default new WeatherService();
+export const weatherService = new WeatherService();
+export default weatherService;

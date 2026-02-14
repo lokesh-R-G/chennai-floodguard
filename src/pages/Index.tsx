@@ -1,17 +1,16 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
 
 const Index = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Check if user is logged in
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
-        navigate("/auth");
-      }
-    });
+    const token = localStorage.getItem("auth_token");
+    if (!token) {
+      navigate("/auth");
+    } else {
+      navigate("/dashboard");
+    }
   }, [navigate]);
 
   return null;
