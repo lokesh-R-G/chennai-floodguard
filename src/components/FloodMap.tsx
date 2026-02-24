@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/apiClient";
 import { MapPin, Droplets, AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 interface FloodZone {
-  id: string;
-  zone_name: string;
-  center_lat: number;
-  center_lon: number;
-  avg_flood_depth: number;
-  current_risk_score: number;
-  predicted_rainfall: number;
+  _id: string;
+  zoneName: string;
+  centerLat: number;
+  centerLon: number;
+  avgFloodDepth: number;
+  currentRiskScore: number;
+  predictedRainfall: number;
 }
 
 const FloodMap = () => {
@@ -19,37 +19,14 @@ const FloodMap = () => {
 
   useEffect(() => {
     fetchZones();
-    
-    // Set up realtime subscription
-    const channel = supabase
-      .channel('flood_zones_changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'flood_zones'
-        },
-        () => {
-          fetchZones();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    const interval = window.setInterval(fetchZones, 15000);
+    return () => window.clearInterval(interval);
   }, []);
 
   const fetchZones = async () => {
     try {
-      const { data, error } = await supabase
-        .from("flood_zones")
-        .select("*")
-        .order("current_risk_score", { ascending: false });
-
-      if (error) throw error;
-      setZones(data || []);
+      const response: any = await apiClient.getFloodZones();
+      setZones(response?.data?.zones || []);
     } catch (error) {
       console.error("Error fetching zones:", error);
     } finally {
@@ -105,25 +82,25 @@ const FloodMap = () => {
       <div className="flex-1 overflow-auto p-4 space-y-3">
         {zones.map((zone) => (
           <div
-            key={zone.id}
+            key={zone._id}
             className="p-4 bg-secondary/30 border border-border rounded-lg hover:bg-secondary/50 transition-colors cursor-pointer"
           >
             <div className="flex items-start justify-between mb-2">
               <div>
-                <h3 className="font-semibold text-base">{zone.zone_name}</h3>
+                <h3 className="font-semibold text-base">{zone.zoneName}</h3>
                 <p className="text-xs text-muted-foreground">
-                  {zone.center_lat.toFixed(4)}°N, {zone.center_lon.toFixed(4)}°E
+                  {zone.centerLat.toFixed(4)}°N, {zone.centerLon.toFixed(4)}°E
                 </p>
               </div>
-              <Badge variant={getRiskBadgeVariant(zone.current_risk_score)}>
-                {getRiskLabel(zone.current_risk_score)}
+              <Badge variant={getRiskBadgeVariant(zone.currentRiskScore)}>
+                {getRiskLabel(zone.currentRiskScore)}
               </Badge>
             </div>
 
             <div className="grid grid-cols-3 gap-3 mt-3">
               <div className="text-center p-2 bg-card rounded">
-                <p className={`text-2xl font-bold ${getRiskColor(zone.current_risk_score)}`}>
-                  {zone.current_risk_score.toFixed(1)}
+                <p className={`text-2xl font-bold ${getRiskColor(zone.currentRiskScore)}`}>
+                  {zone.currentRiskScore.toFixed(1)}
                 </p>
                 <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                   <AlertTriangle className="h-3 w-3" />
@@ -133,7 +110,7 @@ const FloodMap = () => {
 
               <div className="text-center p-2 bg-card rounded">
                 <p className="text-2xl font-bold text-primary">
-                  {zone.avg_flood_depth.toFixed(1)}"
+                  {zone.avgFloodDepth.toFixed(1)}"
                 </p>
                 <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                   <Droplets className="h-3 w-3" />
@@ -143,7 +120,7 @@ const FloodMap = () => {
 
               <div className="text-center p-2 bg-card rounded">
                 <p className="text-2xl font-bold text-accent">
-                  {zone.predicted_rainfall.toFixed(1)}mm
+                  {zone.predictedRainfall.toFixed(1)}mm
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Predicted

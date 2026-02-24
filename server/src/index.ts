@@ -14,15 +14,11 @@ dotenv.config();
 import { config, validateEnv } from './config/env.js';
 import connectDB from './config/database.js';
 import logger from './config/logger.js';
-import { closeRedisConnections } from './config/redis.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { requestIdMiddleware, requestLoggerMiddleware } from './middleware/requestId.js';
 import WebSocketServer from './websocket/index.js';
 import mlPipelineService from './services/mlPipelineService.js';
-import { startNotificationWorker } from './workers/notificationWorker.js';
-import { startMLWorker, scheduleMLCron } from './workers/mlWorker.js';
-import notificationQueue from './queues/notificationQueue.js';
-import mlQueue from './queues/mlQueue.js';
+import { scheduleMLCron, stopMLCron } from './workers/mlWorker.js';
 
 // Import routes
 import authRoutes from './routes/auth.js';
@@ -55,9 +51,26 @@ app.use(requestIdMiddleware);
 app.use(requestLoggerMiddleware);
 app.use(helmet());
 app.use(compression());
+
+const configuredOrigins = (config.corsOrigin || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const isDevLocalhostOrigin = (origin: string): boolean => {
+  if (config.nodeEnv !== 'development') return false;
+  return /^http:\/\/localhost:\d+$/.test(origin) || /^http:\/\/127\.0\.0\.1:\d+$/.test(origin);
+};
+
 app.use(
   cors({
-    origin: config.corsOrigin,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (configuredOrigins.includes(origin) || isDevLocalhostOrigin(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
   }),
 );
@@ -81,6 +94,7 @@ app.use(
   rateLimit({
     windowMs: config.rateLimitWindowMs,
     max: config.rateLimitMax,
+    skip: () => config.nodeEnv === 'development',
     message: 'Too many requests from this IP, please try again later.',
     standardHeaders: true,
     legacyHeaders: false,
@@ -133,11 +147,6 @@ const startServer = async () => {
     // Seed flood zones if empty
     await mlPipelineService.initializeFloodZones();
 
-    // Start Bull workers (in-process; split to separate binary for horizontal scale)
-    startNotificationWorker();
-    startMLWorker();
-
-    // Schedule repeating ML cron job
     await scheduleMLCron(config.mlCronIntervalMin);
 
     httpServer.listen(PORT, () => {
@@ -145,7 +154,6 @@ const startServer = async () => {
       logger.info(`Environment: ${config.nodeEnv}`);
       logger.info(`API: http://localhost:${PORT}/api/${API_VERSION}`);
       logger.info('WebSocket server running');
-      logger.info('Bull workers started (notification + ML)');
     });
 
     // ── Graceful shutdown ──────────────────────
@@ -155,16 +163,10 @@ const startServer = async () => {
       // 1. Stop accepting new connections
       httpServer.close(() => logger.info('HTTP server closed'));
 
-      // 2. Close Bull queues (wait for active jobs)
-      await notificationQueue.close().catch(() => {});
-      await mlQueue.close().catch(() => {});
-      logger.info('Bull queues closed');
+      // 2. Stop cron workers
+      stopMLCron();
 
-      // 3. Close Redis
-      await closeRedisConnections();
-      logger.info('Redis connections closed');
-
-      // 4. Exit
+      // 3. Exit
       process.exit(0);
     };
 

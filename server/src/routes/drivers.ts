@@ -9,6 +9,41 @@ import logger from '../config/logger.js';
 const router = express.Router();
 
 /**
+ * @route   GET /api/v1/drivers/by-user/:userId
+ * @desc    Get driver details by user id
+ * @access  Private
+ */
+router.get(
+  '/by-user/:userId',
+  protect,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const driver = await Driver.findOne({ userId: req.params.userId })
+        .populate('userId', 'fullName email phone')
+        .populate('vehicleId');
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          message: 'Driver not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        data: { driver }
+      });
+    } catch (error: any) {
+      logger.error('Error fetching driver by user:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching driver'
+      });
+    }
+  }
+);
+
+/**
  * @route   GET /api/v1/drivers/:id
  * @desc    Get driver details
  * @access  Private

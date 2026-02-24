@@ -1,9 +1,7 @@
 import { Server as HTTPServer } from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { createAdapter } from '@socket.io/redis-adapter';
 import jwt from 'jsonwebtoken';
 import Driver from '../models/Driver.js';
-import { getPubClient, getSubClient } from '../config/redis.js';
 import { config } from '../config/env.js';
 import logger from '../config/logger.js';
 
@@ -23,26 +21,10 @@ export class WebSocketServer {
       },
     });
 
-    this.attachRedisAdapter();
     this.setupMiddleware();
     this.setupEventHandlers();
 
     logger.info('WebSocket server initialized');
-  }
-
-  /**
-   * Attach Redis adapter for horizontal scaling.
-   * Falls back to in-memory if Redis unavailable.
-   */
-  private attachRedisAdapter(): void {
-    try {
-      const pub = getPubClient();
-      const sub = getSubClient();
-      this.io.adapter(createAdapter(pub, sub));
-      logger.info('WebSocket Redis adapter attached');
-    } catch (err) {
-      logger.warn('Redis adapter unavailable — falling back to in-memory', { error: (err as Error).message });
-    }
   }
 
   private setupMiddleware(): void {

@@ -1,5 +1,4 @@
 import axios from 'axios';
-import { cacheGet, cacheSet } from '../config/redis.js';
 import logger from '../config/logger.js';
 
 export interface WeatherData {
@@ -20,8 +19,6 @@ export interface ForecastData {
   }>;
 }
 
-const CACHE_TTL = 600; // 10 minutes
-
 export class WeatherService {
   private primaryURL: string;
   private fallbackURL?: string;
@@ -34,19 +31,13 @@ export class WeatherService {
   }
 
   /**
-   * Get current weather for a lat/lon. Redis cache → Open-Meteo → Fallback API.
+   * Get current weather for a lat/lon. Open-Meteo → Fallback API.
    * Throws if ALL providers fail — no dummy data.
    */
   async getCurrentWeather(lat: number, lon: number): Promise<WeatherData> {
-    const cacheKey = `weather:current:${lat.toFixed(4)}_${lon.toFixed(4)}`;
-
-    const cached = await cacheGet<WeatherData>(cacheKey);
-    if (cached) return cached;
-
     // Primary: Open-Meteo
     try {
       const data = await this.fetchOpenMeteo(lat, lon);
-      await cacheSet(cacheKey, data, CACHE_TTL);
       return data;
     } catch (primaryErr) {
       logger.warn('Open-Meteo failed, trying fallback', { error: (primaryErr as Error).message });
@@ -56,7 +47,6 @@ export class WeatherService {
     if (this.fallbackURL && this.fallbackAPIKey) {
       try {
         const data = await this.fetchFallback(lat, lon);
-        await cacheSet(cacheKey, data, CACHE_TTL);
         return data;
       } catch (fbErr) {
         logger.error('Fallback weather also failed', { error: (fbErr as Error).message });
@@ -67,10 +57,6 @@ export class WeatherService {
   }
 
   async getForecast(lat: number, lon: number, hours: number = 24): Promise<ForecastData> {
-    const cacheKey = `weather:forecast:${lat.toFixed(4)}_${lon.toFixed(4)}_${hours}`;
-    const cached = await cacheGet<ForecastData>(cacheKey);
-    if (cached) return cached;
-
     const response = await axios.get(`${this.primaryURL}/forecast`, {
       params: {
         latitude: lat,
@@ -90,8 +76,6 @@ export class WeatherService {
         humidity: response.data.hourly.relative_humidity_2m[i],
       })),
     };
-
-    await cacheSet(cacheKey, forecast, CACHE_TTL);
     return forecast;
   }
 

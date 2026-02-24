@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import apiClient from "@/lib/apiClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,28 +23,16 @@ const CitizenPanel = ({ userId }: CitizenPanelProps) => {
   useEffect(() => {
     if (userId) {
       fetchActiveIncident();
+      const interval = window.setInterval(fetchActiveIncident, 10000);
+      return () => window.clearInterval(interval);
     }
   }, [userId]);
 
   const fetchActiveIncident = async () => {
+    if (!userId) return;
     try {
-      const { data, error } = await supabase
-        .from("incidents")
-        .select(`
-          *,
-          assigned_driver:drivers(
-            *,
-            vehicle:vehicles(*)
-          )
-        `)
-        .eq("citizen_id", userId)
-        .in("status", ["pending", "assigned", "in_progress"])
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (error) throw error;
-      setActiveIncident(data);
+      const response: any = await apiClient.getCitizenActiveIncident(userId);
+      setActiveIncident(response?.data?.incident || null);
     } catch (error) {
       console.error("Error fetching incident:", error);
     }
@@ -81,16 +69,12 @@ const CitizenPanel = ({ userId }: CitizenPanelProps) => {
 
     setLoading(true);
     try {
-      const { error } = await supabase.from("incidents").insert({
-        citizen_id: userId,
-        location_lat: location.lat,
-        location_lon: location.lon,
-        emergency_type: emergencyType,
+      await apiClient.createIncident({
+        locationLat: location.lat,
+        locationLon: location.lon,
+        emergencyType,
         description,
-        status: "pending",
       });
-
-      if (error) throw error;
 
       toast.success("Emergency alert sent! Help is on the way.");
       setDescription("");
@@ -127,10 +111,10 @@ const CitizenPanel = ({ userId }: CitizenPanelProps) => {
             <div className="space-y-2 text-sm">
               <p className="flex items-center gap-2">
                 <AlertCircle className="h-4 w-4" />
-                Type: <span className="font-medium capitalize">{activeIncident.emergency_type}</span>
+                Type: <span className="font-medium capitalize">{activeIncident.emergencyType?.replace("_", " ")}</span>
               </p>
               
-              {activeIncident.assigned_driver && (
+              {activeIncident.assignedDriverId && (
                 <>
                   <div className="mt-4 p-3 bg-success/10 border border-success/20 rounded">
                     <p className="font-medium flex items-center gap-2 mb-2">
@@ -138,16 +122,16 @@ const CitizenPanel = ({ userId }: CitizenPanelProps) => {
                       Driver Assigned
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Vehicle: {activeIncident.assigned_driver.vehicle?.vehicle_number}
+                      Vehicle: {activeIncident.assignedDriverId.vehicleId?.vehicleNumber || "Not assigned"}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Type: {activeIncident.assigned_driver.vehicle?.vehicle_type}
+                      Type: {activeIncident.assignedDriverId.vehicleId?.vehicleType || "Not assigned"}
                     </p>
                   </div>
                 </>
               )}
               
-              {!activeIncident.assigned_driver && (
+              {!activeIncident.assignedDriverId && (
                 <div className="mt-4 p-3 bg-warning/10 border border-warning/20 rounded">
                   <p className="text-sm flex items-center gap-2">
                     <Car className="h-4 w-4 text-warning animate-pulse" />

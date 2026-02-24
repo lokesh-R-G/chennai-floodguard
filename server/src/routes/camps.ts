@@ -11,6 +11,36 @@ import logger from '../config/logger.js';
 const router = express.Router();
 
 /**
+ * @route   GET /api/v1/camps/inventory/all
+ * @desc    Get all inventory items across camps
+ * @access  Private (Pharmacist/Admin)
+ */
+router.get(
+  '/inventory/all',
+  protect,
+  authorize(UserRole.PHARMACIST, UserRole.ADMIN),
+  async (_req: AuthRequest, res: Response) => {
+    try {
+      const inventory = await Inventory.find()
+        .populate('campId', 'name address')
+        .sort({ itemName: 1 });
+
+      res.json({
+        success: true,
+        count: inventory.length,
+        data: { inventory }
+      });
+    } catch (error: any) {
+      logger.error('Error fetching all inventory:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching inventory'
+      });
+    }
+  }
+);
+
+/**
  * @route   GET /api/v1/camps
  * @desc    Get all camps
  * @access  Public

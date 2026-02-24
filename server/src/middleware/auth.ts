@@ -184,15 +184,3 @@ export async function revokeAllTokens(userId: string): Promise<void> {
     { revokedAt: new Date() }
   );
 }
-
-
-// Generate Refresh Token
-export const generateRefreshToken = (id: string): string => {
-  return jwt.sign(
-    { id },
-    process.env.JWT_REFRESH_SECRET || 'refresh-secret',
-    {
-      expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d'
-    }
-  );
-};

@@ -134,6 +134,10 @@ class ApiClient {
     return this.client.get(`/drivers/${id}`);
   }
 
+  async getDriverByUser(userId: string) {
+    return this.client.get(`/drivers/by-user/${userId}`);
+  }
+
   async updateDriverStatus(id: string, status: string) {
     return this.client.patch(`/drivers/${id}/status`, { status });
   }
@@ -177,6 +181,10 @@ class ApiClient {
 
   async getCampInventory(campId: string) {
     return this.client.get(`/camps/${campId}/inventory`);
+  }
+
+  async getAllInventory() {
+    return this.client.get('/camps/inventory/all');
   }
 
   async updateInventory(campId: string, itemId: string, quantity: number) {
