@@ -56,7 +56,7 @@ A comprehensive real-time flood prediction and emergency response system powered
 
 ```bash
 # Clone repository
-git clone <repository-url>
+git clone https://github.com/lokesh-R-G/chennai-floodguard.git
 cd chennai-floodguard
 
 # Install all dependencies
